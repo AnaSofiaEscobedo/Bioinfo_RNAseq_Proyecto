@@ -1,0 +1,461 @@
+---
+title: "**Proyecto: Analisis de expresion diferencial usando datos de RNAseq**"
+author: "Ana Sofia Escobedo Muñoz"
+date: "28/02/21"
+output: 
+  html_document:
+    df_print: paged
+    code_folding: show
+    self_contained: yes
+    theme: darkly
+    highlight: breezedark
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{R Importar librerias, echo= FALSE}
+## Load the package at the top of your script
+suppressPackageStartupMessages(library("sessioninfo"))
+
+##  Utilities
+suppressPackageStartupMessages(library('stringr'))
+suppressPackageStartupMessages(library("BiocStyle"))
+suppressPackageStartupMessages(library("biocthis"))
+suppressPackageStartupMessages(library("here"))
+suppressPackageStartupMessages(library("postcards"))
+suppressPackageStartupMessages(library("pryr"))
+suppressPackageStartupMessages(library("usethis"))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library('plyr'))
+
+## Main containers / vis
+suppressPackageStartupMessages(library("SummarizedExperiment"))
+suppressPackageStartupMessages(library("iSEE"))
+
+## RNA-seq
+suppressPackageStartupMessages(library("edgeR"))
+suppressPackageStartupMessages(library("ExploreModelMatrix"))
+suppressPackageStartupMessages(library("limma"))
+suppressPackageStartupMessages(library("recount3"))
+
+## Visualization
+suppressPackageStartupMessages(library("ggplot2"))
+suppressPackageStartupMessages(library("patchwork"))
+suppressPackageStartupMessages(library("pheatmap"))
+suppressPackageStartupMessages(library("RColorBrewer"))
+suppressPackageStartupMessages(library(ggpubr))
+```
+
+```{R Funciones misc., comment= '', echo= FALSE}
+
+summaryToDf <- function(sumMaria){
+  df <- as.data.frame(round(as.vector(sumMaria), 2))
+  colnames(df) <- NULL
+  row.names(df) <- c('Min.', '1st Qu.', 'Median', 'Mean', '3rd Qu.', 'Max.')
+  return(df)
+}
+```
+
+
+# <span style="color:darkred"> **Procesos inflamatorios relacionados con la infeccion de M. tuberculosis: analisis de expresion diferencial** </span>
+
+La tuberculosis es una de las enfermedades infecciosas con el mayor numero de casos en el mundo, presentandose principalmente en paises en vias de desarrollo. Esto se acompaña con el hecho que casi un cuarto de la poblacion mundial tiene a Mycobacterium tuberculosis latente en su corrente sanguineo, pudiendo desarrollar el cuadro patologico completo, caracterizado por fiebre, perdida de peso, esputo sanguinolento y tos. En 2018, de los 10 millones de casos de tuberculosis activa 1.5 millones terminaron en fatalitades, posicionando a la TB como la enfemedad infecciosa mas mortifera al dia de hoy. 
+
+Uno de los efectos mas reconocibles de la TB es la inflamacion de los pulmones, provocada por la presencia de globulos blancos (neutrofilos, macrofagos, etc.) en las zonas circundantes. Dicha reaccion manifiesta altos niveles de citocinas, proteinas de fase aguda entre otros mediadores inflamatorios. 
+
+Analisis de perfilamiento transcriptomico en pacientes con TB activa demostraron elevaciones de la expresion genica en vias de inflamacion, influyendo la via del interferon (IFN), la del receptor complemento FC, entre otras.
+
+A pesar de que la investigacion acerca de este padecimiento es bastante vieja, todavia no se ha caracterizado por completo las dinamicas inmunologicas desde la infeccion hasta el desarrollo de la sintomatologia. 
+
+Por eso mismo, se pretende hacer un analisis de expresion diferencial con datos de individuos con TB y sanos, tratando de observar patrones de expresion previamente caracterizados. 
+
+
+## <span style="color:cornflowerblue">  _Descripcion biologica del set de datos_  </span>
+
+El identificador SRP116272 corresponde a la investigacion _"Sequential inflammatory processes define human progression from M.tuberculosis infection to tuberculosis disease"_ realizada por Thomas J. Scriba y compañia en 2017 (https://pubmed.ncbi.nlm.nih.gov/29145483/) donde se estudio el avance de la tuberculosis en jovenes de 12 a 18 años a nivel inmunologico usando el transcriptoma y proteoma de muestras tanto de sangre total como de plasma sanguineo. 
+
+Las 1650 muestras identificadas para este proyecto provenian de 44 adolescentes que desarrollaron tuberculosis en un lapso determinado de tiempo, y de 106 congeneres que se mantuvieron saludables durante 2 años. Igualmente incluyeron a 82 adultos a los que someterian a revacunacion, pero los datos de estos no se encuentran en el set en cuestion. 
+
+Fueron varios los analisis que hicieron incluyendo transcriptomica cinetica de sangre completa,observacion de marcadores proteicos solubles/proteomica de plasma, dinamica de grupos celulares en sangre periferica, seguimiento de respuesta mediada por TH17 en individuos revacunados y registro de celulas T. 
+
+La progresion de la tuberculosis fue asociada con la modulacion secuencial de procesos inmunologicos
+
+La señalizacion del Interferon tipo I/II y relacionados fueron elevados 18 meses despues del diagnostico de tuberculosis, mientras cambios en la inflamacion mieloide, linfoide, neutrofilos y monocito cluster de genes ocurrieron cercanos a la enfermedad de la tuberculosis 
+
+Analisis de expresion genica en celulas T purificadas tambien revelaban supresion temprana de respuestas mediadas por TH17, comparadas con los controles 
+
+## <span style="color:cornflowerblue">  _Procesado de datos_  </span>
+
+Los datos fueron obtenidos  y convertidos a un objetivo RSE con la ultima version de `recount3`. Posteriormente fue necesario la purificacion de muestras (SRRXXXXXX) cuyo apartado sra.sample_attribute estuviera vacio o con inconsistencias. 
+
+
+```{R Bajar y procesar datos, comment= '', results= 'hide', message = FALSE}
+# Crear objeto
+human_projects <- available_projects()
+proj_info <- subset(
+    human_projects,
+    project == "SRP116272" & project_type == "data_sources"
+)
+proj_SRP116272 <- create_rse(proj_info, verbose = FALSE)
+
+# Añadir conteos al objeto RSE
+assay(proj_SRP116272, "counts") <- compute_read_counts(proj_SRP116272)
+
+# Quitar muestra con sra.sample_attributes vacio (de no quitarse el expand_sra_attributes() fallaria) 
+colDataRowMalita <- match('', proj_SRP116272$sra.sample_attributes)
+proj_SRP116272 <- proj_SRP116272[,-colDataRowMalita]
+
+# Expandir rubros en el colData y cambiar el tipo de variable de algunas columnas
+proj_SRP116272 <- expand_sra_attributes(proj_SRP116272)
+proj_SRP116272$sra_attribute.age <- as.numeric(proj_SRP116272$sra_attribute.age)
+proj_SRP116272$sra_attribute.bin <- as.numeric(proj_SRP116272$sra_attribute.bin)
+```
+
+
+## <span style="color:cornflowerblue">  _Revision de variables/atributos_  </span>
+
+Tras la generacion del objeto, procedemos a analizar el comportamiento de rubros importantes dentro de `colData()` para cada muestra. De los 187 aspectos, se eligieron 6 provenientes de la expansion hecha con `expand_sra_attributes()`
+
+```{R Checar atributos, comment= ''}
+ggplotAttribute <- function(index){
+	vecCat <- colData(proj_SRP116272)[,index]
+	catName <- colnames(colData((proj_SRP116272)))[index]
+	catCleanName <- str_replace(string=catName , pattern= 'sra_attribute.', replacement= '')
+	preData <- data.frame(Categoria = vecCat)
+	finalData <- transform(preData ,Categoria = factor(Categoria))
+	ddFinalData <- ddply(finalData, .(Categoria), summarize, y=length(Categoria))
+	plot <- ggplot(ddFinalData) +
+		aes(x = Categoria, y=y , fill= Categoria) +
+		geom_bar(position="dodge", stat="identity") +
+		geom_text(aes(label=y), vjust=0, size= 2.5) +
+		ggtitle(label= catCleanName) +
+		theme(plot.title = element_text(size=12)) +
+		theme(axis.title.x=element_blank(), axis.text.x=element_blank(), axis.ticks.x=element_blank())
+	return(plot)
+}
+
+#Obtener los indices de las categorias deseadas
+indexs <- match(c("sra_attribute.age", "sra_attribute.source_name", "sra_attribute.gender", "sra_attribute.stimulation", "sra_attribute.previousdiagnosisoftb", "sra_attribute.group"), colnames(colData(proj_SRP116272)))
+
+#Crear plots
+plotAge <- ggplotAttribute(indexs[1])
+plotSource <- ggplotAttribute(indexs[2])
+plotGender <- ggplotAttribute(indexs[3])
+plotStimuli <- ggplotAttribute(indexs[4])
+plotPrevDiagTB <- ggplotAttribute(indexs[5])
+plotGroup <- ggplotAttribute(indexs[6])
+
+#Crear figuras
+figure1 <- ggarrange(plotSource, plotGender, plotPrevDiagTB, plotGroup, ncol = 2, nrow = 2)
+figure2 <- ggarrange(plotAge, plotStimuli, ncol = 2, nrow = 1)
+```
+
+De acuerdo con el estudio, solo conservaron un porcentaje pequeño de los 6,363 participantes iniciales, y dentro del grupo selecto hubo sobrerepresentacion de mujeres, posiblemente por el muestreo realizado. El mayor numero de muestras provenientes de celulas T se puede explicar revisando la metodologia del estudio principal, donde hubo mayor enfasis en este tipo celular, aunque en una de las fases incluyen a varios tipos de globulos blancos. Los grupos de estudio (infectados y sanos) se encuentran representados en proporciones casi 1:1, con excepcion de la categoria "Not a PP case", la cual no es descrita con claridad en el articulo principal. La categoriaa "Previous Diagnosis of TB" hace referencia casos de doble infeccion en los individuos, los cuales son escasos; la infrarepresentacion de este grupo puede que aminore los datos para casos de inmunidad por infeccion (no vacunacion). 
+
+```{R Figure 1, comment= '', echo= FALSE}
+figure1
+```
+
+Por otro lado, el demografico de edad (12-18) tiene una mayor concentracion en individuos con 16 años. Cabe aclarar que las edades elegidas engloban una etapa vital muy variante, razon por la que los investigadores quizas no depositaron su interes, si no en los grupos controles. Para hacer la separacion de monocitos y celulas T fue necesario tener estimulos con antigenos _M.tb_ y esto representaria la categoria stimulation. 
+
+```{R Figure 2, comment= '', echo= FALSE}
+figure2
+```
+
+
+## <span style="color:cornflowerblue">  _Purificacion_  </span>
+
+
+### <span style="color:olivedrab"> Analizando muestras </span>
+
+Se analizan categorias de recount para el conteo de expresion de genes (con analisis de lecturas)
+
+```{R Filtrado 1 Seccion A , comment= ''}
+
+proj_SRP116272$assigned_gene_prop <- proj_SRP116272$recount_qc.gene_fc_count_all.assigned / proj_SRP116272$recount_qc.gene_fc_count_all.total
+summaryToDf(summary(proj_SRP116272$assigned_gene_prop))
+```
+
+Luego se observa la distribucion de este parametro en todas las muestras (1649)
+
+```{R Filtrado 1 Seccion B , comment= ''}
+assigGeneProp <- data.frame(Categoria = proj_SRP116272$assigned_gene_prop)
+figure3 <-ggplot(assigGeneProp, aes(x=Categoria)) + 
+  geom_histogram(color="black", fill= 'darkred') +
+  xlab('Assigned gene prop')
+```
+
+
+Afortunadamente, una gran parte de los datos se encuentra en un umbral aceptable de representacion. Con el objetivo de reducir ruido, se eliminaran los muestras cuya proporcion de genes es menor a 0.5
+
+```{R Figure 3, comment= '', echo= FALSE, message= FALSE}
+figure3
+```
+
+Dichas muestras representan un 7.09 % de las muestras totales (117 de 1649)
+
+```{R Filtrado 1 Seccion C , comment= '', message= FALSE}
+agpDf <- as.data.frame(table(proj_SRP116272$assigned_gene_prop > 0.5))
+ggPieDataAGP <- data.frame(Categoria = agpDf$Var1, Frecuencias = agpDf$Freq)
+figure4 <- ggplot(ggPieDataAGP) +
+	aes(x=2, y= Frecuencias, fill=Categoria) + 
+	geom_bar(stat = "identity", color = "white") +
+	coord_polar(theta = "y", start=0) +
+  ggtitle('Proporcion de muestras con AGP mayor a 0.5')
+```
+
+```{R Figure 4, comment= '', echo= FALSE, message= FALSE}
+figure4
+```
+
+Se realiza la eliminacion de muestras con AGP (assigned gene prop) menor a 0.5
+
+```{R Filtrado 1 Seccion D , comment= ''}
+#proj_SRP116272 <- proj_SRP116272_unfiltered
+proj_SRP116272_unfiltered <- proj_SRP116272
+proj_SRP116272 <- proj_SRP116272[, proj_SRP116272$assigned_gene_prop > 0.5]
+```
+
+### <span style="color:olivedrab">  Analizando genes </span>
+
+Por el lado de los genes, se obtiene la media de las cuentas para cada uno de ellos 
+
+```{R Filtrado 2 Seccion A, comment= ''}
+gene_means <- rowMeans(assay(proj_SRP116272, "counts"))
+summaryToDf(summary(gene_means))
+```
+
+
+```{R Filtrado 2 Seccion B, comment= ''}
+geMeanDf <- as.data.frame(table(gene_means>0.01))
+ggPieDataGM <- data.frame(Categoria = geMeanDf$Var1, Frecuencias = geMeanDf$Freq)
+figure5 <- ggplot(ggPieDataGM) +
+	aes(x=2, y= Frecuencias, fill=Categoria) + 
+	geom_bar(stat = "identity", color = "white") +
+	coord_polar(theta = "y", start=0) +
+  ggtitle('Proporcion de genes con expresion promedio mayor a 0.01')
+```
+
+
+Haciendo uso de un principio similar que en la seccion pasada, se observa que  casi un cuarto de los genes presentan un conteo promedio menor a 0.01, por lo que se deberán eliminar del analisis 
+
+```{R Figure 5, comment= '', echo= FALSE, message= FALSE}
+figure5
+```
+
+Se procede a hacer el ultimo filtrado, que nos conservará un 76.53 % del numero original de genes. 
+
+```{R Filtrado 2 Seccion C, comment= ''}
+proj_SRP116272 <- proj_SRP116272[gene_means > 0.01, ]
+conservedGenesPer <- round(nrow(proj_SRP116272) / nrow(proj_SRP116272_unfiltered) * 100, 2)
+message(paste('Porcentaje de genes conservados: ',conservedGenesPer))
+```
+
+## <span style="color:cornflowerblue">  _Normalizacion_  </span>
+
+```{R Normalizacion, comment= ''}
+#Normalizacion de cuentas 
+dge <- DGEList(
+    counts = assay(proj_SRP116272, "counts"),
+    genes = rowData(proj_SRP116272)
+)
+
+dge <- calcNormFactors(dge)
+```
+
+## <span style="color:cornflowerblue">  _Expresion diferencial_  </span>
+
+### <span style="color:olivedrab">  Analisis de relacion AGP con atributos de las muestras </span>
+
+Para la realizacion del modelo estadistico, es necesario revisar las relaciones que mantienen los atributos mas importantes de las muestras. 
+
+```{R Revision de AGP con sra.sample_attributes Seccion A, comment= ''}
+#Funcion para hacer boxplots
+boxPlottingAGP <- function(x, xlabel){
+  boxPlot <- ggplot(as.data.frame(colData(proj_SRP116272)), aes(y = assigned_gene_prop, x = x, group=x )) +
+    geom_boxplot() +
+    theme_bw(base_size = 10) +
+    ylab("Assigned Gene Prop") +
+    xlab(xlabel)
+}
+
+boxPlotAgeAGP <- boxPlottingAGP(x = proj_SRP116272$sra_attribute.age, xlabel= "Age group")
+boxPlotSourceAGP <- boxPlottingAGP(x = proj_SRP116272$sra_attribute.source_name, xlabel= "Source name")
+boxPlotGenderAGP <- boxPlottingAGP(x = proj_SRP116272$sra_attribute.gender, xlabel= "Gender")
+boxPlotGroupAGP <- boxPlottingAGP(x = proj_SRP116272$sra_attribute.group, xlabel= "Group")
+boxPlotPreDiagAGP <- boxPlottingAGP(x = proj_SRP116272$sra_attribute.previousdiagnosisoftb, xlabel= "Previous diagnosis of TB")
+boxPlotStimuliAGP <- boxPlottingAGP(x = proj_SRP116272$sra_attribute.stimulation, xlabel= "Stimulation")
+
+figure6 <- ggarrange(boxPlotSourceAGP, boxPlotGenderAGP, boxPlotPreDiagAGP, boxPlotGroupAGP , ncol = 2, nrow = 2)
+figure7 <- ggarrange(boxPlotAgeAGP, boxPlotStimuliAGP, ncol = 2, nrow = 1)
+```
+
+
+En todas las variables existe una diferencia en el AGP, pero la mayor diferencia se registra en el tipo celular. Es necesario recordar los primeras plots hechos donde se registraba la proporcion de cada categoria, pues se mantiene una cierta similitud en el caso de los grupos, donde la diferencia entre grupo control y con caso de TB es mas pequeño de lo que intuitivamente se pensaria ("case" ligeramente superior a "control"). 
+
+```{R Figure 6, comment= '', echo= FALSE, message= FALSE}
+figure6
+```
+
+Un caso interesante es el de la edad, pues las proporciones vistas en la primera exploracion desaparecen, y aunque el grupo de 16  años esta sobrerepresantado su AGP es menor que el de 12 (con menos de una decima parte de representacion). Otra variable con posible relevancia estadistica seria el meotodo de estimulacion. 
+
+```{R Figure 7, comment= '', echo= FALSE, message= FALSE}
+figure7
+```
+
+
+### <span style="color:olivedrab">  Modelo estadistico </span>
+
+Con las variables anteriormente mencionadas, se realizará el modelo para la ED
+
+```{R Modelo estadistico, comment= ''}
+#Subset de colData() para la creacion del modelo
+dataModelClean <- DataFrame(cbind(proj_SRP116272$sra_attribute.age, proj_SRP116272$sra_attribute.bin, proj_SRP116272$sra_attribute.source_name, proj_SRP116272$sra_attribute.gender, proj_SRP116272$sra_attribute.stimulation, proj_SRP116272$sra_attribute.previousdiagnosisoftb, proj_SRP116272$sra_attribute.group))
+rownames(dataModelClean) <- colnames(proj_SRP116272)
+colnames(dataModelClean) <- c('sra_attribute.age', 'sra_attribute.bin', 'sra_attribute.source_name', 'sra_attribute.gender', 'sra_attribute.stimulation', 'sra_attribute.previousdiagnosisoftb', 'sra_attribute.group')
+dataModelClean$sra_attribute.age <- as.numeric(dataModelClean$sra_attribute.age)
+dataModelClean$sra_attribute.bin <- as.numeric(dataModelClean$sra_attribute.bin)
+
+#Crear modelo 
+mod <- model.matrix(~ sra_attribute.age + sra_attribute.source_name + sra_attribute.gender + sra_attribute.stimulation + sra_attribute.previousdiagnosisoftb + sra_attribute.group,
+    data = dataModelClean)
+
+#Observar colnames del modelo
+colnames(mod)
+```
+
+
+### <span style="color:olivedrab">  Analisis ED </span>
+
+Se realiza un analisis inicial con el paquete `limma`
+
+```{R Expresion diferencial limma Seccion A, comment= ''}
+vGene <- voom(dge, mod, plot = TRUE)
+```
+
+Se realiza con los datos obtenidos de limma un enfoque Bayesiano y la posterior creacion de los resultados de ED propiamente dichos
+
+```{R Expresion diferencial limma Seccion B, comment= ''}
+eb_results <- eBayes(lmFit(vGene))
+
+de_results <- topTable(
+    eb_results,
+    coef = 9,
+    number = nrow(proj_SRP116272),
+    sort.by = "none")
+```
+
+
+## <span style="color:cornflowerblue">  _Analisis y contraste de resultados_  </span>
+
+
+### <span style="color:olivedrab">  Visualizacion de correlaciones con atributos </span>
+
+Se observa la proporcion de genes diferencialmente expresados
+
+```{R Revision de proporciones, comment= ''}
+table(de_results$adj.P.Val < 0.05)
+```
+
+Se realiza un ploteo con respecto a la categoria `source_name`
+
+```{R Ploteo ED Seccion A, comment= ''}
+plotMA(eb_results, coef = 3)
+```
+
+Despues con respecto a la categoria `group`
+
+```{R Ploteo ED Seccion B, comment= ''}
+plotMA(eb_results, coef = 9)
+```
+
+Finalmente con respecto a `(Intercept)`
+
+```{R Ploteo ED Seccion C, comment= ''}
+plotMA(eb_results, coef = 1)
+```
+
+
+### <span style="color:olivedrab">  Genes mas diferencialmente expresados y su contexto biologico </span>
+
+Con los datos anteriores y las variables analizadas, se puede obtener graficamente los genes mas dif. expresados.
+
+Primero con respecto a `(Intercept)`
+
+```{R Volcano plot expresion genes Seccion A, comment= ''}
+volcanoplot(eb_results, coef = 1, highlight = 3, names = de_results$gene_name)
+```
+
+Luego con respecto a `group`
+
+```{R Volcano plot expresion genes Seccion B, comment= ''}
+volcanoplot(eb_results, coef = 9, highlight = 3, names = de_results$gene_name)
+```
+
+Despues con respecto a `source_type`
+
+```{R Volcano plot expresion genes Seccion C, comment= ''}
+volcanoplot(eb_results, coef = 3, highlight = 3, names = de_results$gene_name)
+```
+
+Y por ultimo con respecto a `age`
+
+```{R Volcano plot expresion genes Seccion D, comment= ''}
+volcanoplot(eb_results, coef = 2, highlight = 3, names = de_results$gene_name)
+```
+
+
+En total, los genes que podrian interesarnos son: B2M, AHNAK, TLN1, SCL4A1, SRSF6, TRDV2
+
+Procederemos a selecionarlos de la matriz de ED
+
+```{R Seccion genes perrones, comment= ''}
+de_results[de_results$gene_name %in% c("B2M", "AHNAK", "TLN1", "SLC4A1", "SRSF6", "TRDV2"), ]
+```
+
+Para todos los genes se realizó una busqueda en GeneCards, y las descripciones se encuentran a continuacion:  
+
+```{R Gene Cards, comment= '', echo= FALSE}
+genes <- c("B2M", "AHNAK", "TLN1", "SLC4A1", "SRSF6", "TRDV2")
+descriptions <- c('Este gen codifica una proteína sérica que se encuentra en asociación con la cadena pesada de clase I del complejo principal de histocompatibilidad (MHC) en la superficie de casi todas las células nucleadas. La proteína tiene una estructura de hoja predominantemente beta plegada que puede formar fibrillas amiloides en algunas condiciones patológicas. La proteína antimicrobiana codificada muestra actividad antibacteriana en el líquido amniótico. Se ha demostrado que una mutación en este gen produce hipoproteinemia hipercatabólica.', 
+                  'La proteína codificada por este gen es una proteína de estructura estructural grande (700 kDa) que consta de un dominio central con repeticiones de 128 aa. La proteína codificada puede desempeñar un papel en procesos tan diversos como la formación de la barrera hematoencefálica, la estructura y migración celular, la regulación del canal de calcio cardíaco y la metástasis tumoral. Existe una variante mucho más corta que codifica una isoforma de 17 kDa para este gen, y la isoforma más corta inicia un ciclo de retroalimentación que regula el corte y empalme alternativo de este gen.', 
+                  'Este gen codifica una proteína citoesquelética que se concentra en áreas de contacto célula-sustrato y célula-célula. La proteína codificada juega un papel importante en el ensamblaje de filamentos de actina y en la propagación y migración de varios tipos de células, incluidos fibroblastos y osteoclastos. Se codistribuye con las integrinas en la membrana de la superficie celular para ayudar en la unión de las células adherentes a las matrices extracelulares y de los linfocitos a otras células. El extremo N de esta proteína contiene elementos para la localización en las uniones célula-matriz extracelular. El extremo C-terminal contiene sitios de unión para proteínas como beta-1-integrina, actina y vinculina.',
+                  'La proteína codificada por este gen es parte de la familia de los intercambiadores de aniones (AE) y se expresa en la membrana plasmática de eritrocitos, donde funciona como un intercambiador de cloruro / bicarbonato involucrado en el transporte de dióxido de carbono desde los tejidos a los pulmones. La proteína codificada se asocia con la proteína de la membrana del glóbulo rojo glicoforina A y esta asociación promueve el correcto plegamiento y translocación del intercambiador. Esta proteína es predominantemente dimérica pero forma tetrámeros en presencia de anquirina.',
+                  'La proteína codificada por este gen está involucrada en el corte y empalme del ARNm y puede desempeñar un papel en la determinación del corte y empalme alternativo. La proteína nuclear codificada pertenece a la familia del factor de corte y empalme SR y se ha demostrado que se une y modula a otro miembro de la familia, SFRS12. El empalme alternativo da como resultado múltiples variantes de transcripción. Además, se han encontrado dos pseudogenes, uno en el cromosoma 17 y el otro en el cromosoma X, para este gen.',
+                  'Los receptores de células T reconocen antígenos extraños que se han procesado como péptidos pequeños y se han unido a moléculas del complejo mayor de histocompatibilidad (MHC) en la superficie de las células presentadoras de antígeno (APC). Cada receptor de células T es un dímero que consta de una cadena alfa y una cadena beta o una cadena delta y una gamma. En una sola célula, los loci del receptor de células T se reorganizan y expresan en el orden delta, gamma, beta y alfa.')
+
+descriGene <- data.frame(Genes = genes, Descripciones = descriptions)
+descriGene
+```
+
+### <span style="color:olivedrab">  Visualizacion general de genes </span>
+
+
+```{R Pheatmap chingon}
+exprs_heatmap <- vGene$E[rank(de_results$adj.P.Val) <= 50, ]
+
+colDf <- colnames(dataModelClean)[-match(c("sra_attribute.bin", "sra_attribute.stimulation", "sra_attribute.previousdiagnosisoftb"), colnames(dataModelClean))]
+df <- as.data.frame(colData(proj_SRP116272)[, colDf])
+colnames(df) <- c("Age", "Source", "Gender",  "Group")
+
+pheatmap(
+    exprs_heatmap,
+    cluster_rows = TRUE,
+    cluster_cols = TRUE,
+    show_rownames = FALSE,
+    show_colnames = FALSE,
+    annotation_col = df)
+```
+
+
+## <span style="color:cornflowerblue">  _Conclusiones_  </span>
+
+
+Los patrones de expresion diferencial detectados en este trabajo no definen de manera absoluta aquellas distribuciones encontradas en el paper principal, sobre todo por el enfoque tan distinto en el que se hizo el estudio. Sin embargo, aquellos genes que destacaron por sus valores de expresion muchas veces caian de categorias relacionadas con procesos inflamatorios, confirmando la premisa que la infeccion de M. tuberculosis tiene un efecto inmenso en los procesos inmunoinflamatorios, sobre todo registrados por celulas T.
+En un futuro, de continuarse este proyecto, se trataria de refinar el analisis, y usar datos de expresion de otros estudios relacionados, para así encontrar patrones en distintas fases de la infeccion, procurando una representacion equitativa entre todoas las categorias para reducir en la medida de lo posible el sesgo. 
+
+
+
+
